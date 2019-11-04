@@ -1,11 +1,17 @@
 package main
 
 import (  
-    "fmt";
-    "os";
-    "log";
+    "fmt"
+    "os"
+    "log"
     "path/filepath"
 )
+
+type analyzer struct {
+	paths []string
+	pathmap map[string]string
+	hashmap map[string]string
+}
 
 func processentry(path string, entry os.FileInfo, err error) error {
 	if err != nil {
@@ -19,23 +25,23 @@ func processentry(path string, entry os.FileInfo, err error) error {
 	return nil	
 }
 
-func addPaths(paths []string) error {
+func NewAnalyzer(paths []string) (*analyzer, error) {
+	a := analyzer{paths: paths }
+
 	for _, element := range paths {
 		err := filepath.Walk(element, processentry)
 		if err != nil {
 		    log.Println(err)
-		    return err
+		    return nil, err
 		}
 	}
-	return nil
+	return &a, nil
 }
 
 func main() {
-	argsWithoutProg := os.Args[1:]
-	fmt.Println(argsWithoutProg)
-
-	err := addPaths(argsWithoutProg)
+	a, err := NewAnalyzer(os.Args[1:])
 	if err != nil {
 	    log.Println(err)
 	}
+	log.Println(a.paths)
 }

@@ -5,6 +5,7 @@ import (
     "io"
     "os"
     "log"
+    "sort"
     "errors"
     "path/filepath"
     "crypto/sha1"
@@ -12,34 +13,43 @@ import (
 )
 
 type analyzer struct {
-	paths []string
-	pathmap map[string]string
-	hashmap map[string]string
+	requestedpaths []string
+	filemap map[string]string
+	dirmap map[string]string
 }
 
 func NewAnalyzer(paths []string) (*analyzer, error) {
-	a := analyzer{paths: paths}
-
-	a.pathmap = make(map[string]string)
-	a.hashmap = make(map[string]string)
+	a := analyzer {
+		requestedpaths:paths,
+		filemap:make(map[string]string),
+		dirmap:make(map[string]string),
+	}
 
 	for _, element := range paths {
-		processfunc := func(path string, fileInfo os.FileInfo, e error) (err error) {
-			e = a.processtree(path, fileInfo, e)
+		fileclosure := func(path string, fileInfo os.FileInfo, e error) (err error) {
+			e = a.process(path, fileInfo, e)
 			if e != nil {
 			    log.Println(err)
 			    return e
 			}
 			return nil
 		}
-		err := filepath.Walk(element, processfunc)
+		err := filepath.Walk(element, fileclosure)
 		if err != nil {
 		    log.Println(err)
 		    return nil, err
 		}
 	}
-	for k, v := range a.pathmap {
-		fmt.Println(v + " " + k)
+	for k, v := range a.filemap {
+		fmt.Println("FILE: " + v + " " + k)
+	}
+	var keys []string
+    for k, _ := range a.dirmap {
+        keys = append(keys, k)
+    }
+    sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Println("DIR:  " + k)
 	}
 	return &a, nil
 }
@@ -55,18 +65,20 @@ func (a analyzer) hashfile(path string) (error) {
 	if _, err := io.Copy(h, f); err != nil {
 		return err
 	}
-	a.pathmap[path] = hex.EncodeToString(h.Sum(nil))
+	a.filemap[path] = hex.EncodeToString(h.Sum(nil))
 	return nil
 }
 
-func (a analyzer) processtree(path string, entry os.FileInfo, err error) error {
+func (a analyzer) process(path string, entry os.FileInfo, err error) error {
 	if err != nil {
 	    return err
 	}
 	if entry.IsDir() {
-		//fmt.Println("dir " + path, entry.Size())
+		// just make a note of the dirs for now
+		// we'll generate hashes for these later
+		a.dirmap[path] = ""
 	} else if entry.Mode().IsRegular() {
-		//fmt.Println("file " + path, entry.Size())
+		// hash the file contents
 		e := a.hashfile(path)
 		if e != nil {
 			return e
@@ -84,5 +96,5 @@ func main() {
 	if err != nil {
 	    log.Println(err)
 	}
-	log.Println(a.paths)
+	log.Println(a.requestedpaths)
 }

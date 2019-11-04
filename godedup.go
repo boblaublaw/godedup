@@ -2,28 +2,19 @@ package main
 
 import (  
     "fmt"
+    "io"
     "os"
     "log"
+    "errors"
     "path/filepath"
+    "crypto/sha1"
+    "encoding/hex"
 )
 
 type analyzer struct {
 	paths []string
 	pathmap map[string]string
 	hashmap map[string]string
-}
-
-func (a analyzer) processtree(path string, entry os.FileInfo, err error) error {
-	if err != nil {
-	    return err
-	}
-	if entry.IsDir() {
-		//fmt.Println("dir " + path, entry.Size())
-	} else {
-		//fmt.Println("file " + path, entry.Size())
-		a.pathmap[path] = "woo"
-	}
-	return nil	
 }
 
 func NewAnalyzer(paths []string) (*analyzer, error) {
@@ -47,9 +38,43 @@ func NewAnalyzer(paths []string) (*analyzer, error) {
 		    return nil, err
 		}
 	}
-	// do more synthesis here
-	fmt.Println(a)
+	for k, v := range a.pathmap {
+		fmt.Println(v + " " + k)
+	}
 	return &a, nil
+}
+
+func (a analyzer) hashfile(path string) (error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	h := sha1.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	a.pathmap[path] = hex.EncodeToString(h.Sum(nil))
+	return nil
+}
+
+func (a analyzer) processtree(path string, entry os.FileInfo, err error) error {
+	if err != nil {
+	    return err
+	}
+	if entry.IsDir() {
+		//fmt.Println("dir " + path, entry.Size())
+	} else if entry.Mode().IsRegular() {
+		//fmt.Println("file " + path, entry.Size())
+		e := a.hashfile(path)
+		if e != nil {
+			return e
+		}
+	} else {
+		return errors.New("Only works on regular files: " + path)
+	}
+	return nil
 }
 
 func main() {

@@ -13,6 +13,7 @@ import (
     "encoding/hex"
 )
 
+// top level object so nothing is global
 type analyzer struct {
 	requestedpaths []string
 	filemap map[string]string
@@ -21,6 +22,7 @@ type analyzer struct {
 	dirsbylen []string
 }
 
+// creates new analyzer object and starts populating it based on requested paths
 func NewAnalyzer(paths []string) (*analyzer, error) {
 	a := analyzer {
 		requestedpaths:paths,
@@ -45,37 +47,7 @@ func NewAnalyzer(paths []string) (*analyzer, error) {
 		    return nil, err
 		}
 	}
-	err = a.hashdirs()
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
-	return &a, nil
-}
-
-func (a analyzer) hashdir (path string) (error) {
-	// find all the files and dirs directly contained herein
-	/*var files []string
-	var dirs []string
-	var rollingHash string
-
-	dirlen := len(path)
-	for k, v := range a.filemap {
-		//fmt.Println("FILE: " + v + " " + k)
-		if substr(k,path) {
-			//
-		}
-	}
-	*/
-	fmt.Println("DIR:  " + path)
-	return nil
-}
-
-func (a analyzer) hashdirs () (error) {
-	//for k, v := range a.filemap {
-	//	fmt.Println("FILE: " + v + " " + k)
-	//}
-    for k, _ := range a.filemap {
+	for k, _ := range a.filemap {
         a.filesbylen = append(a.filesbylen, k)
     }
     for k, _ := range a.dirmap {
@@ -84,12 +56,41 @@ func (a analyzer) hashdirs () (error) {
     // sort the dir and file names by length, longest first:
     sort.Slice(a.filesbylen, func(i, j int) bool { return len(a.filesbylen[i]) > len(a.filesbylen[j]) })
     sort.Slice(a.dirsbylen, func(i, j int) bool { return len(a.dirsbylen[i]) > len(a.dirsbylen[j]) })
+	err = a.hashdirs()
+	if err != nil {
+		log.Println(err)
+		return nil, err
+	}
+	return &a, nil
+}
+
+// hashes a specific directory based on its contents
+func (a analyzer) hashdir (dirname string) (error) {
+	// find all the files and dirs directly contained herein
+
+	dirnamelen := len(dirname)
+	for filename, _ := range a.filemap {
+		filenamelen := len(filename)
+		if dirnamelen >= filenamelen {
+			break
+		}
+		fmt.Println(filename + " may be a member of " + dirname)
+	}
+	// close the hash here
+	fmt.Println("DIR:  " + dirname)
+	return nil
+}
+
+// hashes all directories, starting with the longest first
+func (a analyzer) hashdirs () (error) {
+
 	for _, k := range a.dirsbylen {
 		a.hashdir(k)
 	}
 	return nil
 }
 
+// hashes a specific file based on its contents
 func (a analyzer) hashfile(path string) (error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -104,13 +105,15 @@ func (a analyzer) hashfile(path string) (error) {
 	return nil
 }
 
+// the callback from filepath.walk to process both dirs and files
 func (a analyzer) process(path string, entry os.FileInfo, err error) error {
 	if err != nil {
 	    return err
 	}
 	if entry.IsDir() {
 		// ensure there is one and only one trailng slash on dirs
-		path = strings.TrimRight(path, "/") + "/"
+		sep := string(os.PathSeparator)
+		path = strings.TrimRight(path, sep) + sep
 		// just make a note of this dir for now
 		a.dirmap[path] = ""
 	} else if entry.Mode().IsRegular() {

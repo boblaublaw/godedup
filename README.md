@@ -21,6 +21,10 @@ This project is similar to several of these projects in a few ways:
 
 However, unlike these other projects, this project has a few additional features I found to be absent.  See the "Features" section below for details.
 
+## Motivation
+
+This project was borne of a real problem: I needed a way to deduplicate a large number of highly redundant directories. During the time of optical media backups, I had made many DVD-R snapshots, each structured slightly differently based on shifting requirements over the years. As optical backups age out, and once disk became more affordable, I moved all those optical snapshots back onto disk. This created a lot of redundancy, and worse yet, it was difficult to navigate or tidy. Answering the question "Can I safely delete this?" or "is this the most recent instance of this file?" begged for some automation. Fans of also ZFS will recognize the opportunity to minimize disk usage using ZFS's file redundancy feature, but ZFS wasn't going to help me reorganize from a set of semi-related snapshots into a singular, canonical directory structure intended for cloud backup.
+
 ## Utilization
 
 ```

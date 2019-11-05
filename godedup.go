@@ -16,9 +16,10 @@ import (
 )
 
 type File struct {
-    Name     string
-    Pathname string
-    Digest	 string
+    Name      string
+    Pathname  string
+    Digest	  string
+    DigestErr error
 }
 
 type Dir struct {
@@ -29,28 +30,26 @@ type Dir struct {
     Digest   string
 }
 
-func canonicalpath(inpathname string) string {
+func canonicalpath(inpath string) string {
 	var buf bytes.Buffer
 	var last rune
-	for i, r := range inpathname {
+	for i, r := range inpath {
 		if r != last || i == 0 || r != os.PathSeparator {
 			buf.WriteRune(r)
 			last = r
 		}
 	}
-	outpathname := buf.String()
-	if (outpathname[:2] == "./"){
-		outpathname=outpathname[2:]
+	outpath := buf.String()
+	if (outpath[:2] == "./"){
+		outpath=outpath[2:]
 	}
-	if (outpathname[len(outpathname)-1:] == "/") {
-		outpathname=outpathname[:len(outpathname)-1]
+	if (outpath[len(outpath)-1:] == "/") {
+		outpath=outpath[:len(outpath)-1]
 	}
-	//fmt.Printf("input %s output %s\n", inpathname, outpathname)
-	return outpathname
+	return outpath
 }
 
 func newDir(name string) *Dir {
-	//fmt.Println("creating new dir: " + name)
 	d := Dir{
 		Name:name,Pathname:"",
 		Files:[]*File{},
@@ -75,12 +74,11 @@ func (currdir *Dir) addDir(path []string) (error) {
 }
 
 func (d *Dir) addFile(path []string) error {
-	//fmt.Printf("adding file %s\n", strings.Join(path, "/") )
 	firstpart := path[0]
 	remainder := path[1:]
 	if len(remainder) == 0 {
 		// firstpart is the file
-		f := File{Name:firstpart,Pathname:"",Digest:""}
+		f := File{Name:firstpart,Pathname:"",Digest:"",DigestErr:nil}
 		d.Files = append(d.Files, &f)
 		return nil
 	}	
@@ -94,19 +92,19 @@ func (d *Dir) addFile(path []string) error {
 // hashes a specific file based on its contents
 // notifies the requester when it is done
 func (currfile *File) calcdigest(wg *sync.WaitGroup) {
+	defer wg.Done()
 	f, err := os.Open(currfile.Pathname)
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(-1)
+		currfile.DigestErr = err
+		return
 	}
 	defer f.Close()
 	h := sha1.New()
 	if _, err := io.Copy(h, f); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
+		currfile.DigestErr = err
+		return
 	}
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
-	wg.Done()
 }
 
 // walks the dirtree, populating Pathname values and calculating hashes
@@ -140,6 +138,9 @@ func (currdir *Dir) calcdigests() error {
 
     // tally up the hashes
 	for _, file := range currdir.Files {
+		if file.DigestErr != nil {
+			return file.DigestErr
+		}
 		metahashlist = append(metahashlist, file.Digest)
     }
     for _, subdir := range currdir.Dirs {

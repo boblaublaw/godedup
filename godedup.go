@@ -5,6 +5,7 @@ import (
     "io"
     "os"
     "log"
+    "sort"
     "errors"
     "bytes"
     "strings"
@@ -27,20 +28,24 @@ type Dir struct {
     Digest   string
 }
 
-func canonicalpath(pathname string) string {
+func canonicalpath(inpathname string) string {
 	var buf bytes.Buffer
 	var last rune
-	for i, r := range pathname {
+	for i, r := range inpathname {
 		if r != last || i == 0 || r != os.PathSeparator {
 			buf.WriteRune(r)
 			last = r
 		}
 	}
-	pathname = buf.String()
-	if (pathname[:2] == "./"){
-		pathname=pathname[2:]
+	outpathname := buf.String()
+	if (outpathname[:2] == "./"){
+		outpathname=outpathname[2:]
 	}
-	return pathname
+	if (outpathname[len(outpathname)-1:] == "/") {
+		outpathname=outpathname[:len(outpathname)-1]
+	}
+	//fmt.Printf("input %s output %s\n", inpathname, outpathname)
+	return outpathname
 }
 
 func newDir(name string) *Dir {
@@ -97,6 +102,7 @@ func (currfile *File) calcDigest() (error) {
 		return err
 	}
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
+	//fmt.Println(currfile.Digest)
 	return nil
 }
 
@@ -104,7 +110,7 @@ func (topdir *Dir) Analyze() {
 	// tell all the files and dirs what their pathnames are
 	topdir.InformLineage("")
 	// use those pathnames to calculate digests
-	topdir.CalcDigest()
+	topdir.CalcDigests()
 }
 
 // walks the dirtree, populating Pathname values and calculating hashes
@@ -122,22 +128,37 @@ func (currdir *Dir) InformLineage(preface string) {
 }
 
 // recursively hashes file and dir contents
-func (currdir *Dir) CalcDigest() error {
+func (currdir *Dir) CalcDigests() error {
+	//fmt.Println("calculating digest for " + currdir.Pathname)
+	metahashlist := make([]string,0)
+
     for _, file := range currdir.Files {
 		// print file info
 		e := file.calcDigest()
 		if e != nil {
 			return e
 		}
+		metahashlist = append(metahashlist, file.Digest)
     }
     for _, subdir := range currdir.Dirs {
-        e := subdir.CalcDigest()
+        e := subdir.CalcDigests()
         if e != nil {
 			return e
         }
+		metahashlist = append(metahashlist, subdir.Digest)
     }
-    // print dir info
-    //fmt.Println(currdir.Pathname)
+    // sort digests of subdirs and files so we're not
+    // sensitive to the order of traversal.
+    sort.Strings(metahashlist)
+    h := sha1.New()
+	// seed the hash with something to distinguish
+	// an empty dir from an empty file:
+	io.WriteString(h, "DIRECTORY")
+	for _, hash := range metahashlist {
+		io.WriteString(h, hash)
+	}
+    currdir.Digest = hex.EncodeToString(h.Sum(nil))
+    //fmt.Println(currdir.Digest)
     return nil
 }
 

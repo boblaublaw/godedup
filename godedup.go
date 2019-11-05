@@ -184,7 +184,7 @@ func (currdir *Dir) dump() {
     fmt.Printf("%s %03d %s\n", currdir.Digest, currdir.Level, currdir.Pathname)
 }
 
-type EntryList *[]entry
+type EntryList []*entry
 
 type LevelMap struct {
 	entrymap map[int]EntryList
@@ -201,12 +201,15 @@ type Analyzer struct {
 }
 
 // creates new Analyzer object and starts populating it based on requested paths
-func NewAnalyzer(toppaths []string) (*Analyzer, error) {
+func NewAnalyzer() (*Analyzer) {
 	a := Analyzer {
 		topdirs:make([]*Dir,0),
 		digestmap:make(map[string]*LevelMap),
 	}
-	var err error
+	return &a
+}
+
+func (a *Analyzer) analyze(toppaths []string) (error) {
 	for _, toppathname := range toppaths {
 		// fold any duplicate slashes down to just one
 		toppathname = canonicalpath(toppathname)
@@ -214,31 +217,29 @@ func NewAnalyzer(toppaths []string) (*Analyzer, error) {
 		currdir := newDir(toppathname)
 		a.topdirs = append(a.topdirs, currdir)
 
-		processclosure := func(path string, fileInfo os.FileInfo, e error) (err error) {
+		processclosure := func(path string, fileInfo os.FileInfo, e error) (error) {
 			e = a.process(path, fileInfo, e)
 			if e != nil {
 			    log.Println(e)
-			    os.Exit(-1)
+			    return e
 			}
 			return nil
 		}
 		// walk each requested top level dir for subdirs and files
-		err = filepath.Walk(toppathname, processclosure)
+		err := filepath.Walk(toppathname, processclosure)
 		if err != nil {
 		    log.Println(err)
-		    return nil, err
+		    return err
 		}
 	}
-	return &a, nil
-}
 
-func (a Analyzer) analyze() {
 	for _, topdir := range a.topdirs {
 		// set pathnames (Go has no optional parameters)
 		topdir.InformLineage(1, "")
 		// calculate all the file hashes and dir metahashes
 		topdir.calcdigests()
 	}
+	return nil
 }
 
 func (a Analyzer) dump()  {
@@ -277,12 +278,11 @@ func (a Analyzer) process(path string, entry os.FileInfo, err error) error {
 }
 
 func main() {
-	var a *Analyzer
-	var err error
-	a, err = NewAnalyzer(os.Args[1:])
+	a := NewAnalyzer()
+
+	err := a.analyze(os.Args[1:])
 	if err != nil {
 	    log.Println(err)
 	}
-	a.analyze()
 	a.dump()
 }

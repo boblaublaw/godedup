@@ -10,6 +10,7 @@ import (
     "errors"
     "bytes"
     "strings"
+    "strconv"
     "path/filepath"
     "crypto/sha1"
     "encoding/hex"
@@ -54,6 +55,7 @@ type Dir struct {
 
 type entry interface {
     pathname() string
+    isdir()    bool
     level()    int
     digest()   string
 }
@@ -82,6 +84,14 @@ func (currdir *Dir) level () int {
 	return currdir.Level
 }
 
+func (currfile *File) isdir () bool {
+	return false
+}
+
+func (currdir *Dir) isdir () bool {
+	return true
+}
+
 func newDir(name string, pathname string, level int) *Dir {
 	d := Dir{
 		Name:name,
@@ -94,22 +104,22 @@ func newDir(name string, pathname string, level int) *Dir {
     return &d
 }
 
-func (currdir *Dir) addDir(segments []string, pathname string, level int) (error) {
+func (currdir *Dir) addDir(segments []string, pathname string, level int, info os.FileInfo) (error) {
 	firstpart := segments[0]
 	remainder := segments[1:]
 	// already exists, recurse into it:
 	if val, ok := currdir.Dirs[firstpart]; ok {
-		return (val.addDir(remainder, pathname, level))
+		return (val.addDir(remainder, pathname, level, info))
 	}
 	// create a new leaf and recurse into it
 	if len(remainder) == 0 {
 		currdir.Dirs[firstpart] = newDir(firstpart, pathname, level)
 		return nil
 	}
-	return (currdir.Dirs[firstpart].addDir(remainder, pathname, level))
+	return (currdir.Dirs[firstpart].addDir(remainder, pathname, level, info))
 }
 
-func (d *Dir) addFile(segments []string, pathname string, level int) error {
+func (d *Dir) addFile(segments []string, pathname string, level int, info os.FileInfo) error {
 	firstpart := segments[0]
 	remainder := segments[1:]
 	if len(remainder) == 0 {
@@ -120,7 +130,7 @@ func (d *Dir) addFile(segments []string, pathname string, level int) error {
 	}	
 	// still finding the containing dir
 	if val, ok := d.Dirs[firstpart]; ok {
-		return (val.addFile(remainder, pathname, level))
+		return (val.addFile(remainder, pathname, level, info))
 	}
 	return errors.New("somehow can't find a subdir for file placement")
 }
@@ -141,7 +151,7 @@ func (currfile *File) calcdigest(a *Analyzer, wg *sync.WaitGroup) {
 		return
 	}
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
-	a.fileEntry(currfile)
+	a.storedirentry(currfile)
 }
 
 // recursively hashes file and dir contents
@@ -183,7 +193,7 @@ func (currdir *Dir) calcdigests(a *Analyzer) error {
 		io.WriteString(h, hash)
 	}
     currdir.Digest = hex.EncodeToString(h.Sum(nil))
-	a.fileEntry(currdir)
+	a.storedirentry(currdir)
     return nil
 }
 
@@ -252,7 +262,7 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 }
 
 // the callback from filepath.walk to process both dirs and files
-func (a *Analyzer) process(path string, entry os.FileInfo, err error) error {
+func (a *Analyzer) process(path string, info os.FileInfo, err error) error {
 	if err != nil {
 	    return err
 	}
@@ -266,20 +276,20 @@ func (a *Analyzer) process(path string, entry os.FileInfo, err error) error {
 		if toppath == path[:len(toppath)] {
 			trimpath := path[len(toppath)+1:]
 			segments := strings.Split(trimpath, string(os.PathSeparator))
-			if entry.IsDir() {
-				return topdir.addDir(segments, path, len(segments) + 1)
+			if info.IsDir() {
+				return topdir.addDir(segments, path, len(segments) + 1, info)
 			}
-			if !entry.Mode().IsRegular() {
+			if !info.Mode().IsRegular() {
 				return errors.New("irregular files not handled: " + path)
 			}
 			// must be a file:
-			return topdir.addFile(segments, path, len(segments) + 1)
+			return topdir.addFile(segments, path, len(segments) + 1, info)
 		}
 	}
 	return errors.New("path outside requested tops: " + path)
 }
 
-func (a *Analyzer) fileEntry(e entry) {
+func (a *Analyzer) storedirentry(e entry) {
 	dig := e.digest()
 	lev := e.level()
 
@@ -298,7 +308,8 @@ func (a *Analyzer) fileEntry(e entry) {
 }
 
 func (a *Analyzer) showduplicates()  {
-	for dig, lm := range a.digestmap {
+	fmt.Println("#!/bin/sh\n# REVIEW ALL THESE COMMANDS BEFORE EXECUTION\n")
+	for _, lm := range a.digestmap {
 		count := 0
 		for _, el := range lm {
 			count = count + len(el)
@@ -328,10 +339,15 @@ func (a *Analyzer) showduplicates()  {
 				})
 				for _, e := range el {
 					index = index + 1
+					// the first instance is the keeper
 					if index == 1 {
-						fmt.Printf("%s %03d %03d %s KEEP\n",dig, len(lm), lev, e.pathname())
+						fmt.Printf("# keep %s\n",strconv.Quote(e.pathname()))
 					} else {
-						fmt.Printf("%s %03d %03d %s DELETE\n",dig, len(lm), lev, e.pathname())
+						if e.isdir() {
+							fmt.Printf("rm -rf %s\n",strconv.Quote(e.pathname()))
+						} else {
+							fmt.Printf("rm     %s\n",strconv.Quote(e.pathname()))
+						}
 					}
 				}
 			}

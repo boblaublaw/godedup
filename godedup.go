@@ -35,10 +35,6 @@ func canonicalpath(inpath string) string {
 	return outpath
 }
 
-type entry interface {
-    pathname() string
-}
-
 type File struct {
     Name      string
     Pathname  string
@@ -54,6 +50,36 @@ type Dir struct {
     Level    int
     Files    []*File
     Dirs     map[string]*Dir
+}
+
+type entry interface {
+    pathname() string
+    level()    int
+    digest()   string
+}
+
+func (currfile *File) pathname () string {
+	return currfile.Pathname
+}
+
+func (currdir *Dir) pathname () string {
+	return currdir.Pathname
+}
+
+func (currfile *File) digest () string {
+	return currfile.Digest
+}
+
+func (currdir *Dir) digest () string {
+	return currdir.Digest
+}
+
+func (currfile *File) level () int {
+	return currfile.Level
+}
+
+func (currdir *Dir) level () int {
+	return currdir.Level
 }
 
 func newDir(name string, pathname string, level int) *Dir {
@@ -101,7 +127,7 @@ func (d *Dir) addFile(segments []string, pathname string, level int) error {
 
 // hashes a specific file based on its contents
 // notifies the requester when it is done
-func (currfile *File) calcdigest(wg *sync.WaitGroup) {
+func (currfile *File) calcdigest(a *Analyzer, wg *sync.WaitGroup) {
 	defer wg.Done()
 	f, err := os.Open(currfile.Pathname)
 	if err != nil {
@@ -115,10 +141,11 @@ func (currfile *File) calcdigest(wg *sync.WaitGroup) {
 		return
 	}
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
+	a.fileEntry(currfile)
 }
 
 // recursively hashes file and dir contents
-func (currdir *Dir) calcdigests() error {
+func (currdir *Dir) calcdigests(a *Analyzer) error {
 	// we need a canonical list of the hashes of the files and subdirs
 	hashlist := make([]string,0)
 
@@ -126,10 +153,9 @@ func (currdir *Dir) calcdigests() error {
     var wg sync.WaitGroup
     for _, file := range currdir.Files {
         wg.Add(1)
-		go file.calcdigest(&wg)
+		go file.calcdigest(a, &wg)
 	}
     wg.Wait()
-
     // tally up the hashes from completed goroutines
 	for _, file := range currdir.Files {
 		if file.DigestErr != nil {
@@ -138,7 +164,7 @@ func (currdir *Dir) calcdigests() error {
 		hashlist = append(hashlist, file.Digest)
     }
     for _, subdir := range currdir.Dirs {
-        e := subdir.calcdigests()
+        e := subdir.calcdigests(a)
         if e != nil {
 			return e
         }
@@ -157,6 +183,7 @@ func (currdir *Dir) calcdigests() error {
 		io.WriteString(h, hash)
 	}
     currdir.Digest = hex.EncodeToString(h.Sum(nil))
+	a.fileEntry(currdir)
     return nil
 }
 
@@ -171,27 +198,30 @@ func (currdir *Dir) dump() {
     fmt.Printf("%s %03d %s\n", currdir.Digest, currdir.Level, currdir.Pathname)
 }
 
-type EntryList []*entry
+type EntryList = []entry
 
-type LevelMap struct {
-	entrymap map[int]EntryList
+func newEntryList() EntryList {
+	el := make([]entry,0)
+    return el
 }
 
-func newLevelMap() *LevelMap {
-	lm := LevelMap{ entrymap:make(map[int]EntryList) }
-    return &lm
+type LevelMap = map[int]EntryList
+
+func newLevelMap() LevelMap {
+	lm := make(map[int]EntryList)
+    return lm
 }
 
 type Analyzer struct {
 	topdirs []*Dir
-	digestmap map[string]*LevelMap
+	digestmap map[string]LevelMap
 }
 
 // creates new Analyzer object and starts populating it based on requested paths
 func NewAnalyzer() (*Analyzer) {
 	a := Analyzer {
 		topdirs:make([]*Dir,0),
-		digestmap:make(map[string]*LevelMap),
+		digestmap:make(map[string]LevelMap),
 	}
 	return &a
 }
@@ -216,7 +246,7 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 		if err != nil {
 		    return err
 		}
-		currdir.calcdigests()
+		currdir.calcdigests(a)
 	}
 	return nil
 }
@@ -249,9 +279,36 @@ func (a *Analyzer) process(path string, entry os.FileInfo, err error) error {
 	return errors.New("path outside requested tops: " + path)
 }
 
+func (a *Analyzer) fileEntry(e entry) {
+	dig := e.digest()
+	lev := e.level()
+
+	if _, ok := a.digestmap[dig]; ok {
+		if _, ok := a.digestmap[dig][lev]; ok {
+			a.digestmap[dig][lev] = append(a.digestmap[dig][lev], e)
+		} else {
+			a.digestmap[dig][lev] = newEntryList()
+			a.digestmap[dig][lev] = append(a.digestmap[dig][lev], e)
+		}
+	} else {
+		a.digestmap[dig] = newLevelMap()
+		a.digestmap[dig][lev] = newEntryList()
+		a.digestmap[dig][lev] = append(a.digestmap[dig][lev], e)
+	}
+}
+
 func (a *Analyzer) dump()  {
-	for _, topdir := range a.topdirs {
-		topdir.dump()
+	//for _, topdir := range a.topdirs {
+	//	topdir.dump()
+	//}
+	for dig, ll := range a.digestmap {
+		//fmt.Printf("%s has %d\n", dig, len(ll))
+		for lev, el := range ll {
+			//fmt.Printf("\t%03d %d\n", lev, len(el))
+			for _, e := range el {
+				fmt.Printf("%s %03d %s\n",dig, lev, e.pathname())
+			}
+		}
 	}
 }
 

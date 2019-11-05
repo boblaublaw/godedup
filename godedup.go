@@ -14,6 +14,11 @@ import (
     "encoding/hex"
 )
 
+type entry interface {
+    calcdigest()
+    dump()
+}
+
 type File struct {
     Name     string
     Pathname string
@@ -91,7 +96,7 @@ func (d *Dir) addFile(path []string) error {
 }
 
 // hashes a specific file based on its contents
-func (currfile *File) calcDigest() (error) {
+func (currfile *File) calcdigest() (error) {
 	f, err := os.Open(currfile.Pathname)
 	if err != nil {
 		return err
@@ -104,13 +109,6 @@ func (currfile *File) calcDigest() (error) {
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
 	//fmt.Println(currfile.Digest)
 	return nil
-}
-
-func (topdir *Dir) Analyze() {
-	// tell all the files and dirs what their pathnames are
-	topdir.InformLineage("")
-	// use those pathnames to calculate digests
-	topdir.CalcDigests()
 }
 
 // walks the dirtree, populating Pathname values and calculating hashes
@@ -128,20 +126,20 @@ func (currdir *Dir) InformLineage(preface string) {
 }
 
 // recursively hashes file and dir contents
-func (currdir *Dir) CalcDigests() error {
+func (currdir *Dir) calcdigests() error {
 	//fmt.Println("calculating digest for " + currdir.Pathname)
 	metahashlist := make([]string,0)
 
     for _, file := range currdir.Files {
 		// print file info
-		e := file.calcDigest()
+		e := file.calcdigest()
 		if e != nil {
 			return e
 		}
 		metahashlist = append(metahashlist, file.Digest)
     }
     for _, subdir := range currdir.Dirs {
-        e := subdir.CalcDigests()
+        e := subdir.calcdigests()
         if e != nil {
 			return e
         }
@@ -163,26 +161,27 @@ func (currdir *Dir) CalcDigests() error {
 }
 
 // recursively hashes file and dir contents
-func (currdir *Dir) Dump() {
+func (currdir *Dir) dump() {
     for _, file := range currdir.Files {
 		// print file info
         fmt.Println(file.Digest + " " + file.Pathname)
     }
     for _, subdir := range currdir.Dirs {
-        subdir.Dump()
+        subdir.dump()
     }
     // print dir info
     fmt.Println(currdir.Digest + " " + currdir.Pathname)
 }
 
 // top level object so nothing is global
-type analyzer struct {
-	topdirs       []*Dir
+type Analyzer struct {
+	topdirs []*Dir
+	//digests map[string]*Entry
 }
 
-// creates new analyzer object and starts populating it based on requested paths
-func NewAnalyzer(toppaths []string) (*analyzer, error) {
-	a := analyzer {
+// creates new Analyzer object and starts populating it based on requested paths
+func NewAnalyzer(toppaths []string) (*Analyzer, error) {
+	a := Analyzer {
 		topdirs:make([]*Dir,0),
 	}
 	var err error
@@ -207,19 +206,27 @@ func NewAnalyzer(toppaths []string) (*analyzer, error) {
 		    log.Println(err)
 		    return nil, err
 		}
-		currdir.Analyze()
 	}
 	return &a, nil
 }
 
-func (a analyzer) Dump()  {
+func (a Analyzer) analyze() {
+	for _, topdir := range a.topdirs {
+		// set pathnames (Go has no optional parameters)
+		topdir.InformLineage("")
+		// calculate all the file hashes and dir metahashes
+		topdir.calcdigests()
+	}
+}
+
+func (a Analyzer) dump()  {
 	for _, v := range a.topdirs {
-		v.Dump()
+		v.dump()
 	}
 }
 
 // the callback from filepath.walk to process both dirs and files
-func (a analyzer) process(path string, entry os.FileInfo, err error) error {
+func (a Analyzer) process(path string, entry os.FileInfo, err error) error {
 	if err != nil {
 		fmt.Println(err)
 	    return err
@@ -248,11 +255,13 @@ func (a analyzer) process(path string, entry os.FileInfo, err error) error {
 }
 
 func main() {
-	var a *analyzer
+	var a *Analyzer
 	var err error
 	a, err = NewAnalyzer(os.Args[1:])
 	if err != nil {
 	    log.Println(err)
 	}
-	a.Dump()
+	a.analyze()
+	//a.Pivot()
+	a.dump()
 }

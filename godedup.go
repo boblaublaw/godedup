@@ -56,9 +56,11 @@ type Dir struct {
     Dirs     map[string]*Dir
 }
 
-func newDir(name string) *Dir {
+func newDir(name string, pathname string, level int) *Dir {
 	d := Dir{
-		Name:name,Pathname:"",
+		Name:name,
+		Pathname:pathname,
+		Level:level,
 		Files:[]*File{},
 		Dirs:make(map[string]*Dir),
 		Digest:"",
@@ -66,32 +68,33 @@ func newDir(name string) *Dir {
     return &d
 }
 
-func (currdir *Dir) addDir(path []string) (error) {
-	firstpart := path[0]
-	remainder := path[1:]
+func (currdir *Dir) addDir(segments []string, pathname string, level int) (error) {
+	firstpart := segments[0]
+	remainder := segments[1:]
+	// already exists, recurse into it:
 	if val, ok := currdir.Dirs[firstpart]; ok {
-		return (val.addDir(remainder))
+		return (val.addDir(remainder, pathname, level))
 	}
-	currdir.Dirs[firstpart] = newDir(firstpart)
-	if len(remainder) > 1 {
-		return (currdir.Dirs[firstpart].addDir(remainder))
+	// create a new leaf and recurse into it
+	if len(remainder) == 0 {
+		currdir.Dirs[firstpart] = newDir(firstpart, pathname, level)
+		return nil
 	}
-	// directory already exists, do nothing
-	return nil
+	return (currdir.Dirs[firstpart].addDir(remainder, pathname, level))
 }
 
-func (d *Dir) addFile(path []string) error {
-	firstpart := path[0]
-	remainder := path[1:]
+func (d *Dir) addFile(segments []string, pathname string, level int) error {
+	firstpart := segments[0]
+	remainder := segments[1:]
 	if len(remainder) == 0 {
 		// firstpart is the file
-		f := File{Name:firstpart}
+		f := File{Name:firstpart,Pathname:pathname,Level:level}
 		d.Files = append(d.Files, &f)
 		return nil
 	}	
 	// still finding the containing dir
 	if val, ok := d.Dirs[firstpart]; ok {
-		return (val.addFile(remainder))
+		return (val.addFile(remainder, pathname, level))
 	}
 	return errors.New("somehow can't find a subdir for file placement")
 }
@@ -112,22 +115,6 @@ func (currfile *File) calcdigest(wg *sync.WaitGroup) {
 		return
 	}
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
-}
-
-// walks the dirtree, populating Pathname values and calculating hashes
-func (currdir *Dir) InformLineage(level int, preface string) {
-    for _, file := range currdir.Files {
-		// print file info
-        file.Pathname = fmt.Sprintf("%s%s%c%s", preface, currdir.Name,
-			os.PathSeparator, file.Name)
-		file.Level = level + 1
-    }
-    for _, subdir := range currdir.Dirs {
-        subdir.InformLineage(level + 1, preface + currdir.Name + string(os.PathSeparator))
-    }
-    // print dir info
-    currdir.Pathname = fmt.Sprintf("%s%s", preface, currdir.Name)
-	currdir.Level = level
 }
 
 // recursively hashes file and dir contents
@@ -214,7 +201,7 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 		// fold any duplicate slashes down to just one
 		toppathname = canonicalpath(toppathname)
 		// add this dir to the requested top level dirs
-		currdir := newDir(toppathname)
+		currdir := newDir(toppathname, toppathname, 1)
 		a.topdirs = append(a.topdirs, currdir)
 
 		processclosure := func(path string, fileInfo os.FileInfo, e error) (error) {
@@ -231,25 +218,13 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 		    log.Println(err)
 		    return err
 		}
-	}
-
-	for _, topdir := range a.topdirs {
-		// set pathnames (Go has no optional parameters)
-		topdir.InformLineage(1, "")
-		// calculate all the file hashes and dir metahashes
-		topdir.calcdigests()
+		currdir.calcdigests()
 	}
 	return nil
 }
 
-func (a Analyzer) dump()  {
-	for _, v := range a.topdirs {
-		v.dump()
-	}
-}
-
 // the callback from filepath.walk to process both dirs and files
-func (a Analyzer) process(path string, entry os.FileInfo, err error) error {
+func (a *Analyzer) process(path string, entry os.FileInfo, err error) error {
 	if err != nil {
 		fmt.Println(err)
 	    return err
@@ -265,16 +240,22 @@ func (a Analyzer) process(path string, entry os.FileInfo, err error) error {
 			trimpath := path[len(toppath)+1:]
 			segments := strings.Split(trimpath, string(os.PathSeparator))
 			if entry.IsDir() {
-				return topdir.addDir(segments)
+				return topdir.addDir(segments, path, len(segments) + 1)
 			}
 			if !entry.Mode().IsRegular() {
 				return errors.New("irregular files not handled: " + path)
 			}
 			// must be a file:
-			return topdir.addFile(segments)
+			return topdir.addFile(segments, path, len(segments) + 1)
 		}
 	}
 	return errors.New("path outside requested tops: " + path)
+}
+
+func (a *Analyzer) dump()  {
+	for _, topdir := range a.topdirs {
+		topdir.dump()
+	}
 }
 
 func main() {

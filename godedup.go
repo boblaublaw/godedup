@@ -5,7 +5,6 @@ import (
     "io"
     "os"
     "log"
-    //"sort"
     "errors"
     "bytes"
     "strings"
@@ -15,13 +14,15 @@ import (
 )
 
 type File struct {
-    Name string
+    Name     string
+    Pathname string
 }
 
 type Dir struct {
-    Name  string
-    Files []File
-    Dirs  map[string]*Dir
+    Name     string
+    Pathname string
+    Files    []*File
+    Dirs     map[string]*Dir
 }
 
 func canonicalpath(pathname string) string {
@@ -42,7 +43,7 @@ func canonicalpath(pathname string) string {
 
 func newDir(name string) *Dir {
 	//fmt.Println("creating new dir: " + name)
-	d := Dir{name, []File{}, make(map[string]*Dir)}
+	d := Dir{Name:name,Pathname:"", Files:[]*File{}, Dirs:make(map[string]*Dir)}
     return &d
 }
 
@@ -66,7 +67,8 @@ func (d *Dir) addFile(path []string) error {
 	remainder := path[1:]
 	if len(remainder) == 0 {
 		// firstpart is the file
-		d.Files = append(d.Files, File{firstpart})
+		f := File{Name:firstpart,Pathname:""}
+		d.Files = append(d.Files, &f)
 		return nil
 	}	
 	// still finding the containing dir
@@ -76,17 +78,30 @@ func (d *Dir) addFile(path []string) error {
 	return errors.New("somehow can't find a subdir for file placement")
 }
 
-// recursively dumps file and dir listings to stdout
-func (currdir *Dir) Dump(preface string) {
+// recursively hashes file and dir contents
+func (currdir *Dir) Analyze(preface string) {
     for _, file := range currdir.Files {
 		// print file info
-        fmt.Printf("%s%s%c%s\n", preface, currdir.Name, os.PathSeparator, file.Name)
+        file.Pathname = fmt.Sprintf("%s%s%c%s", preface, currdir.Name, os.PathSeparator, file.Name)
     }
     for _, subdir := range currdir.Dirs {
-        subdir.Dump(preface + currdir.Name + string(os.PathSeparator))
+        subdir.Analyze(preface + currdir.Name + string(os.PathSeparator))
     }
     // print dir info
-    fmt.Printf("%s%s\n", preface, currdir.Name)
+    currdir.Pathname = fmt.Sprintf("%s%s", preface, currdir.Name)
+}
+
+// recursively hashes file and dir contents
+func (currdir *Dir) Dump() {
+    for _, file := range currdir.Files {
+		// print file info
+        fmt.Println(file.Pathname)
+    }
+    for _, subdir := range currdir.Dirs {
+        subdir.Dump()
+    }
+    // print dir info
+    fmt.Println(currdir.Pathname)
 }
 
 // top level object so nothing is global
@@ -122,17 +137,6 @@ func NewAnalyzer(rootpaths []string) (*analyzer, error) {
 		}
 	}
 	return &a, nil
-}
-
-// hashes a specific directory based on its contents
-func (a analyzer) hashdir (dirname string) (error) {
-	// find all the files and dirs directly contained herein
-	return nil
-}
-
-// hashes all directories, starting with the longest first
-func (a analyzer) hashdirs () (error) {
-	return nil
 }
 
 // hashes a specific file based on its contents
@@ -187,6 +191,7 @@ func main() {
 	    log.Println(err)
 	}
 	for _, v := range a.rootdirs {
-		v.Dump("")
+		v.Analyze("")
+		v.Dump()
 	}
 }

@@ -10,12 +10,13 @@ import (
     "strings"
     "path/filepath"
     "crypto/sha1"
-    //"encoding/hex"
+    "encoding/hex"
 )
 
 type File struct {
     Name     string
     Pathname string
+    Digest	 string
 }
 
 type Dir struct {
@@ -23,6 +24,7 @@ type Dir struct {
     Pathname string
     Files    []*File
     Dirs     map[string]*Dir
+    Digest   string
 }
 
 func canonicalpath(pathname string) string {
@@ -43,19 +45,24 @@ func canonicalpath(pathname string) string {
 
 func newDir(name string) *Dir {
 	//fmt.Println("creating new dir: " + name)
-	d := Dir{Name:name,Pathname:"", Files:[]*File{}, Dirs:make(map[string]*Dir)}
+	d := Dir{
+		Name:name,Pathname:"",
+		Files:[]*File{},
+		Dirs:make(map[string]*Dir),
+		Digest:"",
+	}
     return &d
 }
 
-func (f *Dir) addDir(path []string) (error) {
+func (currdir *Dir) addDir(path []string) (error) {
 	firstpart := path[0]
 	remainder := path[1:]
-	if val, ok := f.Dirs[firstpart]; ok {
+	if val, ok := currdir.Dirs[firstpart]; ok {
 		return (val.addDir(remainder))
 	}
-	f.Dirs[firstpart] = newDir(firstpart)
+	currdir.Dirs[firstpart] = newDir(firstpart)
 	if len(remainder) > 1 {
-		return (f.Dirs[firstpart].addDir(remainder))
+		return (currdir.Dirs[firstpart].addDir(remainder))
 	}
 	// directory already exists, do nothing
 	return nil
@@ -67,7 +74,7 @@ func (d *Dir) addFile(path []string) error {
 	remainder := path[1:]
 	if len(remainder) == 0 {
 		// firstpart is the file
-		f := File{Name:firstpart,Pathname:""}
+		f := File{Name:firstpart,Pathname:"",Digest:""}
 		d.Files = append(d.Files, &f)
 		return nil
 	}	
@@ -78,48 +85,92 @@ func (d *Dir) addFile(path []string) error {
 	return errors.New("somehow can't find a subdir for file placement")
 }
 
-// recursively hashes file and dir contents
-func (currdir *Dir) Analyze(preface string) {
+// hashes a specific file based on its contents
+func (currfile *File) calcDigest() (error) {
+	f, err := os.Open(currfile.Pathname)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha1.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	currfile.Digest = hex.EncodeToString(h.Sum(nil))
+	return nil
+}
+
+func (topdir *Dir) Analyze() {
+	// tell all the files and dirs what their pathnames are
+	topdir.InformLineage("")
+	// use those pathnames to calculate digests
+	topdir.CalcDigest()
+}
+
+// walks the dirtree, populating Pathname values and calculating hashes
+func (currdir *Dir) InformLineage(preface string) {
     for _, file := range currdir.Files {
 		// print file info
-        file.Pathname = fmt.Sprintf("%s%s%c%s", preface, currdir.Name, os.PathSeparator, file.Name)
+        file.Pathname = fmt.Sprintf("%s%s%c%s", preface, currdir.Name,
+			os.PathSeparator, file.Name)
     }
     for _, subdir := range currdir.Dirs {
-        subdir.Analyze(preface + currdir.Name + string(os.PathSeparator))
+        subdir.InformLineage(preface + currdir.Name + string(os.PathSeparator))
     }
     // print dir info
     currdir.Pathname = fmt.Sprintf("%s%s", preface, currdir.Name)
 }
 
 // recursively hashes file and dir contents
+func (currdir *Dir) CalcDigest() error {
+    for _, file := range currdir.Files {
+		// print file info
+		e := file.calcDigest()
+		if e != nil {
+			return e
+		}
+    }
+    for _, subdir := range currdir.Dirs {
+        e := subdir.CalcDigest()
+        if e != nil {
+			return e
+        }
+    }
+    // print dir info
+    //fmt.Println(currdir.Pathname)
+    return nil
+}
+
+// recursively hashes file and dir contents
 func (currdir *Dir) Dump() {
     for _, file := range currdir.Files {
 		// print file info
-        fmt.Println(file.Pathname)
+        fmt.Println(file.Digest + " " + file.Pathname)
     }
     for _, subdir := range currdir.Dirs {
         subdir.Dump()
     }
     // print dir info
-    fmt.Println(currdir.Pathname)
+    fmt.Println(currdir.Digest + " " + currdir.Pathname)
 }
 
 // top level object so nothing is global
 type analyzer struct {
-	rootdirs       []*Dir
+	topdirs       []*Dir
 }
 
 // creates new analyzer object and starts populating it based on requested paths
-func NewAnalyzer(rootpaths []string) (*analyzer, error) {
+func NewAnalyzer(toppaths []string) (*analyzer, error) {
 	a := analyzer {
-		rootdirs:make([]*Dir,0),
+		topdirs:make([]*Dir,0),
 	}
 	var err error
-	for _, rootpathname := range rootpaths {
+	for _, toppathname := range toppaths {
 		// fold any duplicate slashes down to just one
-		rootpathname = canonicalpath(rootpathname)
+		toppathname = canonicalpath(toppathname)
 		// add this dir to the requested top level dirs
-		a.rootdirs = append(a.rootdirs, newDir(rootpathname))
+		currdir := newDir(toppathname)
+		a.topdirs = append(a.topdirs, currdir)
 
 		processclosure := func(path string, fileInfo os.FileInfo, e error) (err error) {
 			e = a.process(path, fileInfo, e)
@@ -130,28 +181,20 @@ func NewAnalyzer(rootpaths []string) (*analyzer, error) {
 			return nil
 		}
 		// walk each requested top level dir for subdirs and files
-		err = filepath.Walk(rootpathname, processclosure)
+		err = filepath.Walk(toppathname, processclosure)
 		if err != nil {
 		    log.Println(err)
 		    return nil, err
 		}
+		currdir.Analyze()
 	}
 	return &a, nil
 }
 
-// hashes a specific file based on its contents
-func (a analyzer) hashfile(path string) (error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
+func (a analyzer) Dump()  {
+	for _, v := range a.topdirs {
+		v.Dump()
 	}
-	defer f.Close()
-	h := sha1.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return err
-	}
-	//a.filemap[path] = hex.EncodeToString(h.Sum(nil))
-	return nil
 }
 
 // the callback from filepath.walk to process both dirs and files
@@ -160,27 +203,27 @@ func (a analyzer) process(path string, entry os.FileInfo, err error) error {
 		fmt.Println(err)
 	    return err
 	}
-	for _, rootdir := range a.rootdirs {
-		rootpath := rootdir.Name
-		if rootpath == path {
-			// already added the root level dirs
+	for _, topdir := range a.topdirs {
+		toppath := topdir.Name
+		if toppath == path {
+			// already added the top level dirs
 			return nil
 		}
-		// which rootpath are we in?
-		if rootpath == path[:len(rootpath)] {
-			trimpath := path[len(rootpath)+1:]
+		// which toppath are we in?
+		if toppath == path[:len(toppath)] {
+			trimpath := path[len(toppath)+1:]
 			segments := strings.Split(trimpath, string(os.PathSeparator))
 			if entry.IsDir() {
-				return rootdir.addDir(segments)
+				return topdir.addDir(segments)
 			}
 			if !entry.Mode().IsRegular() {
 				return errors.New("irregular files not handled: " + path)
 			}
 			// must be a file:
-			return rootdir.addFile(segments)
+			return topdir.addFile(segments)
 		}
 	}
-	return errors.New("path outside requested roots: " + path)
+	return errors.New("path outside requested tops: " + path)
 }
 
 func main() {
@@ -190,8 +233,5 @@ func main() {
 	if err != nil {
 	    log.Println(err)
 	}
-	for _, v := range a.rootdirs {
-		v.Analyze("")
-		v.Dump()
-	}
+	a.Dump()
 }

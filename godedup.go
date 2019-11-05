@@ -6,6 +6,7 @@ import (
     "os"
     "log"
     "sort"
+    "sync"
     "errors"
     "bytes"
     "strings"
@@ -13,11 +14,6 @@ import (
     "crypto/sha1"
     "encoding/hex"
 )
-
-type entry interface {
-    calcdigest()
-    dump()
-}
 
 type File struct {
     Name     string
@@ -96,19 +92,21 @@ func (d *Dir) addFile(path []string) error {
 }
 
 // hashes a specific file based on its contents
-func (currfile *File) calcdigest() (error) {
+// notifies the requester when it is done
+func (currfile *File) calcdigest(wg *sync.WaitGroup) {
 	f, err := os.Open(currfile.Pathname)
 	if err != nil {
-		return err
+		fmt.Println(err)
+		os.Exit(-1)
 	}
 	defer f.Close()
 	h := sha1.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return err
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
 	}
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
-	//fmt.Println(currfile.Digest)
-	return nil
+	wg.Done()
 }
 
 // walks the dirtree, populating Pathname values and calculating hashes
@@ -130,12 +128,18 @@ func (currdir *Dir) calcdigests() error {
 	//fmt.Println("calculating digest for " + currdir.Pathname)
 	metahashlist := make([]string,0)
 
+    var wg sync.WaitGroup
+
     for _, file := range currdir.Files {
 		// print file info
-		e := file.calcdigest()
-		if e != nil {
-			return e
-		}
+        wg.Add(1)
+		go file.calcdigest(&wg)
+	}
+    // wait for all files to be hashed concurrently
+    wg.Wait()
+
+    // tally up the hashes
+	for _, file := range currdir.Files {
 		metahashlist = append(metahashlist, file.Digest)
     }
     for _, subdir := range currdir.Dirs {
@@ -145,6 +149,7 @@ func (currdir *Dir) calcdigests() error {
         }
 		metahashlist = append(metahashlist, subdir.Digest)
     }
+
     // sort digests of subdirs and files so we're not
     // sensitive to the order of traversal.
     sort.Strings(metahashlist)

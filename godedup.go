@@ -15,21 +15,7 @@ import (
     "encoding/hex"
 )
 
-type File struct {
-    Name      string
-    Pathname  string
-    Digest	  string
-    DigestErr error
-}
-
-type Dir struct {
-    Name     string
-    Pathname string
-    Files    []*File
-    Dirs     map[string]*Dir
-    Digest   string
-}
-
+// helper function
 func canonicalpath(inpath string) string {
 	var buf bytes.Buffer
 	var last rune
@@ -47,6 +33,27 @@ func canonicalpath(inpath string) string {
 		outpath=outpath[:len(outpath)-1]
 	}
 	return outpath
+}
+
+type entry interface {
+    pathname() string
+}
+
+type File struct {
+    Name      string
+    Pathname  string
+    Digest	  string
+    Level     int
+    DigestErr error
+}
+
+type Dir struct {
+    Name     string
+    Pathname string
+    Digest   string
+    Level    int
+    Files    []*File
+    Dirs     map[string]*Dir
 }
 
 func newDir(name string) *Dir {
@@ -78,7 +85,7 @@ func (d *Dir) addFile(path []string) error {
 	remainder := path[1:]
 	if len(remainder) == 0 {
 		// firstpart is the file
-		f := File{Name:firstpart,Pathname:"",Digest:"",DigestErr:nil}
+		f := File{Name:firstpart}
 		d.Files = append(d.Files, &f)
 		return nil
 	}	
@@ -108,87 +115,96 @@ func (currfile *File) calcdigest(wg *sync.WaitGroup) {
 }
 
 // walks the dirtree, populating Pathname values and calculating hashes
-func (currdir *Dir) InformLineage(preface string) {
+func (currdir *Dir) InformLineage(level int, preface string) {
     for _, file := range currdir.Files {
 		// print file info
         file.Pathname = fmt.Sprintf("%s%s%c%s", preface, currdir.Name,
 			os.PathSeparator, file.Name)
+		file.Level = level + 1
     }
     for _, subdir := range currdir.Dirs {
-        subdir.InformLineage(preface + currdir.Name + string(os.PathSeparator))
+        subdir.InformLineage(level + 1, preface + currdir.Name + string(os.PathSeparator))
     }
     // print dir info
     currdir.Pathname = fmt.Sprintf("%s%s", preface, currdir.Name)
+	currdir.Level = level
 }
 
 // recursively hashes file and dir contents
 func (currdir *Dir) calcdigests() error {
-	//fmt.Println("calculating digest for " + currdir.Pathname)
-	metahashlist := make([]string,0)
+	// we need a canonical list of the hashes of the files and subdirs
+	hashlist := make([]string,0)
 
+	// launch file hashing goroutines
     var wg sync.WaitGroup
-
     for _, file := range currdir.Files {
-		// print file info
         wg.Add(1)
 		go file.calcdigest(&wg)
 	}
-    // wait for all files to be hashed concurrently
     wg.Wait()
 
-    // tally up the hashes
+    // tally up the hashes from completed goroutines
 	for _, file := range currdir.Files {
 		if file.DigestErr != nil {
 			return file.DigestErr
 		}
-		metahashlist = append(metahashlist, file.Digest)
+		hashlist = append(hashlist, file.Digest)
     }
     for _, subdir := range currdir.Dirs {
         e := subdir.calcdigests()
         if e != nil {
 			return e
         }
-		metahashlist = append(metahashlist, subdir.Digest)
+		hashlist = append(hashlist, subdir.Digest)
     }
 
     // sort digests of subdirs and files so we're not
     // sensitive to the order of traversal.
-    sort.Strings(metahashlist)
+    sort.Strings(hashlist)
+
     h := sha1.New()
 	// seed the hash with something to distinguish
 	// an empty dir from an empty file:
-	io.WriteString(h, "DIRECTORY")
-	for _, hash := range metahashlist {
+	io.WriteString(h, "DIRECTORYSEED")
+	for _, hash := range hashlist {
 		io.WriteString(h, hash)
 	}
     currdir.Digest = hex.EncodeToString(h.Sum(nil))
-    //fmt.Println(currdir.Digest)
     return nil
 }
 
 // recursively hashes file and dir contents
 func (currdir *Dir) dump() {
     for _, file := range currdir.Files {
-		// print file info
-        fmt.Println(file.Digest + " " + file.Pathname)
+        fmt.Printf("%s %03d %s\n", file.Digest, file.Level, file.Pathname)
     }
     for _, subdir := range currdir.Dirs {
         subdir.dump()
     }
-    // print dir info
-    fmt.Println(currdir.Digest + " " + currdir.Pathname)
+    fmt.Printf("%s %03d %s\n", currdir.Digest, currdir.Level, currdir.Pathname)
 }
 
-// top level object so nothing is global
+type EntryList *[]entry
+
+type LevelMap struct {
+	entrymap map[int]EntryList
+}
+
+func newLevelMap() *LevelMap {
+	lm := LevelMap{ entrymap:make(map[int]EntryList) }
+    return &lm
+}
+
 type Analyzer struct {
 	topdirs []*Dir
-	//digests map[string]*Entry
+	digestmap map[string]*LevelMap
 }
 
 // creates new Analyzer object and starts populating it based on requested paths
 func NewAnalyzer(toppaths []string) (*Analyzer, error) {
 	a := Analyzer {
 		topdirs:make([]*Dir,0),
+		digestmap:make(map[string]*LevelMap),
 	}
 	var err error
 	for _, toppathname := range toppaths {
@@ -219,7 +235,7 @@ func NewAnalyzer(toppaths []string) (*Analyzer, error) {
 func (a Analyzer) analyze() {
 	for _, topdir := range a.topdirs {
 		// set pathnames (Go has no optional parameters)
-		topdir.InformLineage("")
+		topdir.InformLineage(1, "")
 		// calculate all the file hashes and dir metahashes
 		topdir.calcdigests()
 	}
@@ -268,6 +284,5 @@ func main() {
 	    log.Println(err)
 	}
 	a.analyze()
-	//a.Pivot()
 	a.dump()
 }

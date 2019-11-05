@@ -4,7 +4,6 @@ import (
     "fmt"
     "io"
     "os"
-    "log"
     "sort"
     "sync"
     "errors"
@@ -357,11 +356,33 @@ func (a *Analyzer) showduplicates()  {
 }
 
 func main() {
+	usage := `
+%s Usage:
+
+	%s <first supplied path> [additonal supplied paths ...]
+
+	%s will generate a human readable shell script enumerating redundant files and
+	directories in the supplied paths.
+
+Example:
+	Step 1:
+		%s somedir1 somedir2 foo/bar/somedir3 > cleanup_script.sh
+	Step 2:
+		vi cleanup_script.sh
+	Step 3:
+		sh cleanup_script.sh
+
+`
+	if len(os.Args) == 1 {
+		cmdName := string(os.Args[0])
+		fmt.Fprintf(os.Stderr, usage, cmdName, cmdName, cmdName, cmdName)
+		os.Exit(0)
+	}
 	a := NewAnalyzer()
 
 	err := a.analyze(os.Args[1:])
 	if err != nil {
-	    log.Println(err)
+	    fmt.Fprintf(os.Stderr, "%s\n", err)
 	}
 	a.showduplicates()
 }

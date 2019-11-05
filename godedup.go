@@ -297,17 +297,45 @@ func (a *Analyzer) fileEntry(e entry) {
 	}
 }
 
-func (a *Analyzer) dump()  {
-	//for _, topdir := range a.topdirs {
-	//	topdir.dump()
-	//}
-	for dig, ll := range a.digestmap {
-		//fmt.Printf("%s has %d\n", dig, len(ll))
-		for lev, el := range ll {
-			//fmt.Printf("\t%03d %d\n", lev, len(el))
-			for _, e := range el {
-				fmt.Printf("%s %03d %s\n",dig, lev, e.pathname())
+func (a *Analyzer) showduplicates()  {
+	for dig, lm := range a.digestmap {
+		count := 0
+		for _, el := range lm {
+			count = count + len(el)
+		}
+		// skip all unique files
+		if count > 1 {
+			index := 0
+			levels := make([]int,0)
+			for lev, _ := range lm {
+				levels = append(levels, lev)
 			}
+			// prefer the files and dirs closest to the topdirs
+			sort.Ints(levels)
+			for _, lev := range levels {
+				el := lm[lev]
+				// at same level, prefer shorter pathnames
+				// at same level and pathnamelen, prefer alphabetical
+				sort.Slice(el, func(i, j int) bool {
+					pa := el[i].pathname()
+					pb := el[j].pathname()
+					scorea := len(pa)
+					scoreb := len(pb)
+					if scorea != scoreb {
+						return scorea < scoreb
+					}
+					return pa < pb
+				})
+				for _, e := range el {
+					index = index + 1
+					if index == 1 {
+						fmt.Printf("%s %03d %03d %s KEEP\n",dig, len(lm), lev, e.pathname())
+					} else {
+						fmt.Printf("%s %03d %03d %s DELETE\n",dig, len(lm), lev, e.pathname())
+					}
+				}
+			}
+			fmt.Println()
 		}
 	}
 }
@@ -319,5 +347,5 @@ func main() {
 	if err != nil {
 	    log.Println(err)
 	}
-	a.dump()
+	a.showduplicates()
 }

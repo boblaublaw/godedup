@@ -207,7 +207,6 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 		processclosure := func(path string, fileInfo os.FileInfo, e error) (error) {
 			e = a.process(path, fileInfo, e)
 			if e != nil {
-			    log.Println(e)
 			    return e
 			}
 			return nil
@@ -215,7 +214,6 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 		// walk each requested top level dir for subdirs and files
 		err := filepath.Walk(toppathname, processclosure)
 		if err != nil {
-		    log.Println(err)
 		    return err
 		}
 		currdir.calcdigests()
@@ -226,7 +224,6 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 // the callback from filepath.walk to process both dirs and files
 func (a *Analyzer) process(path string, entry os.FileInfo, err error) error {
 	if err != nil {
-		fmt.Println(err)
 	    return err
 	}
 	for _, topdir := range a.topdirs {

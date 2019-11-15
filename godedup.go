@@ -118,26 +118,26 @@ func (currdir *Dir) addDir(segments []string, pathname string, level int, info o
 	return (currdir.Dirs[firstpart].addDir(remainder, pathname, level, info))
 }
 
-func (d *Dir) addFile(segments []string, pathname string, level int, info os.FileInfo, a *Analyzer) error {
+func (d *Dir) addFile(segments []string, pathname string, level int, info os.FileInfo, filechan chan *File) error {
 	firstpart := segments[0]
 	remainder := segments[1:]
 	if len(remainder) == 0 {
 		// firstpart is the file
 		newfile := File{Name:firstpart,Pathname:pathname,Level:level}
-		a.filechan <- &newfile
+		filechan <- &newfile
 		d.Files = append(d.Files, &newfile)
 		return nil
 	}	
 	// still finding the containing dir
 	if val, ok := d.Dirs[firstpart]; ok {
-		return (val.addFile(remainder, pathname, level, info, a))
+		return (val.addFile(remainder, pathname, level, info, filechan))
 	}
 	return errors.New("somehow can't find a subdir for file placement")
 }
 
 // hashes a specific file based on its contents
 // notifies the requester when it is done
-func (currfile *File) calcdigest(a *Analyzer) {
+func (currfile *File) calcdigest() {
 	f, err := os.Open(currfile.Pathname)
 	if err != nil {
 		currfile.DigestErr = err
@@ -150,7 +150,6 @@ func (currfile *File) calcdigest(a *Analyzer) {
 		return
 	}
 	currfile.Digest = hex.EncodeToString(h.Sum(nil))
-	a.storedirentry(currfile)
 }
 
 // recursively hashes file and dir contents
@@ -159,11 +158,12 @@ func (currdir *Dir) calcdigests(a *Analyzer) error {
 	hashlist := make([]string,0)
 
     // tally up the hashes from completed goroutines
-	for _, file := range currdir.Files {
-		if file.DigestErr != nil {
-			return file.DigestErr
+	for _, currfile := range currdir.Files {
+		if currfile.DigestErr != nil {
+			return currfile.DigestErr
 		}
-		hashlist = append(hashlist, file.Digest)
+		a.storedirentry(currfile)
+		hashlist = append(hashlist, currfile.Digest)
     }
     for _, subdir := range currdir.Dirs {
         e := subdir.calcdigests(a)
@@ -231,13 +231,13 @@ func NewAnalyzer() (*Analyzer) {
 	return &a
 }
 
-func (a *Analyzer) filehasher(workerid int, wg *sync.WaitGroup) {
+func filehasher(workerid int, filechan chan *File, wg *sync.WaitGroup) {
 	for {
-        currfile, ok := <- a.filechan
+        currfile, ok := <- filechan
         if ok == false {
             break
         }
-        currfile.calcdigest(a)
+        currfile.calcdigest()
         //fmt.Println("Worker",workerid,"has hashed a file ", currfile.Pathname, currfile.Digest)
     }
     wg.Done()
@@ -245,10 +245,11 @@ func (a *Analyzer) filehasher(workerid int, wg *sync.WaitGroup) {
 
 func (a *Analyzer) analyze(toppaths []string, numworkers int) (error) {
 	var wg sync.WaitGroup
+
 	// hashing files is IO intensive so we launch a worker pool
 	for i := 0; i < numworkers; i++ {
 		wg.Add(1)
-		go a.filehasher(i, &wg)
+		go filehasher(i, a.filechan, &wg)
 	}
 
 	for _, toppathname := range toppaths {
@@ -271,16 +272,20 @@ func (a *Analyzer) analyze(toppaths []string, numworkers int) (error) {
 		    return err
 		}
 	}
-	// all files and dirs have been added to in-memory dirtree.
-	// close this channel so the workers know to exit once they are done.
+	// all files and dirs have been added to in-memory directory trees.
+	// close this channel so the workers know to exit once they are done:
 	close(a.filechan)
-	// wait for any files to finish hashing
+	// wait for any files to finish hashing:
 	wg.Wait()
 
-	// at this point all files are hashed, now calculate the metahashes:
+	// at this point all files are hashed, now calculate the metahashes
+	// and populate a.digestmap:
 	for _, currdir := range a.topdirs {
 		currdir.calcdigests(a)
 	}
+	// a.digestmap is populated, here is where we would generate something
+	// (sizemap) which tells us the total bytes represented by a given
+	// digest value
 	return nil
 }
 
@@ -306,7 +311,7 @@ func (a *Analyzer) process(path string, info os.FileInfo, err error) error {
 				return errors.New("irregular files not handled: " + path)
 			}
 			// must be a file:
-			return topdir.addFile(segments, path, len(segments) + 1, info, a)
+			return topdir.addFile(segments, path, len(segments) + 1, info, a.filechan)
 		}
 	}
 	return errors.New("path outside requested tops: " + path)
@@ -335,50 +340,61 @@ func (a *Analyzer) storedirentry(e entry) {
 
 func (a *Analyzer) showduplicates()  {
 	fmt.Println("#!/bin/sh\n# REVIEW ALL THESE COMMANDS BEFORE EXECUTION\n")
-	for _, lm := range a.digestmap {
+
+	// we sort keys by digest, which isn't particularly meaningful. This
+	// is where we should probably be presenting things in order of total
+	// savings available.
+	keys := make([]string, 0)
+	for k, _ := range a.digestmap {
+	    keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		lm := a.digestmap[k]
 		count := 0
 		for _, el := range lm {
 			count = count + len(el)
 		}
 		// skip all unique files
-		if count > 1 {
-			index := 0
-			levels := make([]int,0)
-			for lev, _ := range lm {
-				levels = append(levels, lev)
-			}
-			// prefer the files and dirs closest to the topdirs
-			sort.Ints(levels)
-			for _, lev := range levels {
-				el := lm[lev]
-				// at same level, prefer shorter pathnames
-				// at same level and pathnamelen, prefer alphabetical
-				sort.Slice(el, func(i, j int) bool {
-					pa := el[i].pathname()
-					pb := el[j].pathname()
-					scorea := len(pa)
-					scoreb := len(pb)
-					if scorea != scoreb {
-						return scorea < scoreb
-					}
-					return pa < pb
-				})
-				for _, e := range el {
-					index = index + 1
-					// the first instance is the keeper
-					if index == 1 {
-						fmt.Printf("# keep %s\n",strconv.Quote(e.pathname()))
+		if count == 1 {
+			continue
+		}
+		index := 0
+		levels := make([]int,0)
+		for lev, _ := range lm {
+			levels = append(levels, lev)
+		}
+		// prefer the files and dirs closest to the topdirs
+		sort.Ints(levels)
+		for _, lev := range levels {
+			el := lm[lev]
+			// at same level, prefer shorter pathnames
+			// at same level and pathnamelen, prefer alphabetical
+			sort.Slice(el, func(i, j int) bool {
+				pa := el[i].pathname()
+				pb := el[j].pathname()
+				scorea := len(pa)
+				scoreb := len(pb)
+				if scorea != scoreb {
+					return scorea < scoreb
+				}
+				return pa < pb
+			})
+			for _, e := range el {
+				index = index + 1
+				// the first instance is the keeper
+				if index == 1 {
+					fmt.Printf("# keep %s\n",strconv.Quote(e.pathname()))
+				} else {
+					if e.isdir() {
+						fmt.Printf("rm -rf %s\n",strconv.Quote(e.pathname()))
 					} else {
-						if e.isdir() {
-							fmt.Printf("rm -rf %s\n",strconv.Quote(e.pathname()))
-						} else {
-							fmt.Printf("rm     %s\n",strconv.Quote(e.pathname()))
-						}
+						fmt.Printf("rm     %s\n",strconv.Quote(e.pathname()))
 					}
 				}
 			}
-			fmt.Println()
 		}
+		fmt.Println()
 	}
 }
 

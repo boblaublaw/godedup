@@ -118,26 +118,26 @@ func (currdir *Dir) addDir(segments []string, pathname string, level int, info o
 	return (currdir.Dirs[firstpart].addDir(remainder, pathname, level, info))
 }
 
-func (d *Dir) addFile(segments []string, pathname string, level int, info os.FileInfo) error {
+func (d *Dir) addFile(segments []string, pathname string, level int, info os.FileInfo, a *Analyzer) error {
 	firstpart := segments[0]
 	remainder := segments[1:]
 	if len(remainder) == 0 {
 		// firstpart is the file
-		f := File{Name:firstpart,Pathname:pathname,Level:level}
-		d.Files = append(d.Files, &f)
+		newfile := File{Name:firstpart,Pathname:pathname,Level:level}
+		a.filechan <- &newfile
+		d.Files = append(d.Files, &newfile)
 		return nil
 	}	
 	// still finding the containing dir
 	if val, ok := d.Dirs[firstpart]; ok {
-		return (val.addFile(remainder, pathname, level, info))
+		return (val.addFile(remainder, pathname, level, info, a))
 	}
 	return errors.New("somehow can't find a subdir for file placement")
 }
 
 // hashes a specific file based on its contents
 // notifies the requester when it is done
-func (currfile *File) calcdigest(a *Analyzer, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (currfile *File) calcdigest(a *Analyzer) {
 	f, err := os.Open(currfile.Pathname)
 	if err != nil {
 		currfile.DigestErr = err
@@ -159,12 +159,9 @@ func (currdir *Dir) calcdigests(a *Analyzer) error {
 	hashlist := make([]string,0)
 
 	// launch file hashing goroutines
-    var wg sync.WaitGroup
-    for _, file := range currdir.Files {
-        wg.Add(1)
-		go file.calcdigest(a, &wg)
-	}
-    wg.Wait()
+    //for _, file := range currdir.Files {
+    //    a.filechan <- file
+	//}
     // tally up the hashes from completed goroutines
 	for _, file := range currdir.Files {
 		if file.DigestErr != nil {
@@ -224,18 +221,42 @@ func newLevelMap() LevelMap {
 type Analyzer struct {
 	topdirs []*Dir
 	digestmap map[string]LevelMap
+	filechan chan *File
+	dirtreemux sync.Mutex
+	numworkers int
 }
 
 // creates new Analyzer object and starts populating it based on requested paths
-func NewAnalyzer() (*Analyzer) {
+func NewAnalyzer(numworkers int) (*Analyzer) {
 	a := Analyzer {
-		topdirs:make([]*Dir,0),
-		digestmap:make(map[string]LevelMap),
+		topdirs: make([]*Dir,0),
+		digestmap: make(map[string]LevelMap),
+		filechan: make(chan *File, numworkers),
+		numworkers: numworkers,
 	}
 	return &a
 }
 
+func (a *Analyzer) filehasher(workerid int, wg *sync.WaitGroup) {
+	for {
+        currfile, ok := <- a.filechan
+        if ok == false {
+            break
+        }
+        currfile.calcdigest(a)
+        //fmt.Println("Worker",workerid,"has hashed a file ", currfile.Pathname, currfile.Digest)
+    }
+    wg.Done()
+}
+
 func (a *Analyzer) analyze(toppaths []string) (error) {
+	var wg sync.WaitGroup
+	// hashing files is IO intensive so we launch a worker pool
+	for i := 0; i < a.numworkers; i++ {
+		wg.Add(1)
+		go a.filehasher(i, &wg)
+	}
+
 	for _, toppathname := range toppaths {
 		// fold any duplicate slashes down to just one
 		toppathname = canonicalpath(toppathname)
@@ -255,6 +276,15 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 		if err != nil {
 		    return err
 		}
+	}
+	// all files and dirs have been added to in-memory dirtree.
+	// close this channel so the workers know to exit once they are done.
+	close(a.filechan)
+	// wait for any files to finish hashing
+	wg.Wait()
+
+	for _, currdir := range a.topdirs {
+		// at this point all files are hashed, now calculate the metahashes
 		currdir.calcdigests(a)
 	}
 	return nil
@@ -282,7 +312,7 @@ func (a *Analyzer) process(path string, info os.FileInfo, err error) error {
 				return errors.New("irregular files not handled: " + path)
 			}
 			// must be a file:
-			return topdir.addFile(segments, path, len(segments) + 1, info)
+			return topdir.addFile(segments, path, len(segments) + 1, info, a)
 		}
 	}
 	return errors.New("path outside requested tops: " + path)
@@ -291,6 +321,9 @@ func (a *Analyzer) process(path string, info os.FileInfo, err error) error {
 func (a *Analyzer) storedirentry(e entry) {
 	dig := e.digest()
 	lev := e.level()
+
+	a.dirtreemux.Lock()
+	defer a.dirtreemux.Unlock()
 
 	if _, ok := a.digestmap[dig]; ok {
 		if _, ok := a.digestmap[dig][lev]; ok {
@@ -378,7 +411,8 @@ Example:
 		fmt.Fprintf(os.Stderr, usage, cmdName, cmdName, cmdName, cmdName)
 		os.Exit(0)
 	}
-	a := NewAnalyzer()
+	numworkers := 4
+	a := NewAnalyzer(numworkers)
 
 	err := a.analyze(os.Args[1:])
 	if err != nil {

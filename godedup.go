@@ -283,8 +283,8 @@ func (a *Analyzer) analyze(toppaths []string) (error) {
 	// wait for any files to finish hashing
 	wg.Wait()
 
+	// at this point all files are hashed, now calculate the metahashes:
 	for _, currdir := range a.topdirs {
-		// at this point all files are hashed, now calculate the metahashes
 		currdir.calcdigests(a)
 	}
 	return nil

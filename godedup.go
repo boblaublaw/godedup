@@ -338,6 +338,22 @@ func (a *Analyzer) storedirentry(e entry) {
 	}
 }
 
+func showcollisions(el EntryList, index *int) {
+	for _, e := range el {
+		*index = *index + 1
+		// the first instance is the keeper
+		if *index == 1 {
+			fmt.Printf("# keep %s\n",strconv.Quote(e.pathname()))
+		} else {
+			if e.isdir() {
+				fmt.Printf("rm -rf %s\n",strconv.Quote(e.pathname()))
+			} else {
+				fmt.Printf("rm     %s\n",strconv.Quote(e.pathname()))
+			}
+		}
+	}
+}
+
 func (a *Analyzer) showduplicates()  {
 	fmt.Println("#!/bin/sh\n# REVIEW ALL THESE COMMANDS BEFORE EXECUTION\n")
 
@@ -380,19 +396,7 @@ func (a *Analyzer) showduplicates()  {
 				}
 				return pa < pb
 			})
-			for _, e := range el {
-				index = index + 1
-				// the first instance is the keeper
-				if index == 1 {
-					fmt.Printf("# keep %s\n",strconv.Quote(e.pathname()))
-				} else {
-					if e.isdir() {
-						fmt.Printf("rm -rf %s\n",strconv.Quote(e.pathname()))
-					} else {
-						fmt.Printf("rm     %s\n",strconv.Quote(e.pathname()))
-					}
-				}
-			}
+			showcollisions(el, &index)
 		}
 		fmt.Println()
 	}
